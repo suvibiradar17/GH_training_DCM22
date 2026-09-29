@@ -1,0 +1,54 @@
+# Build directories
+build/
+cmake_build/
+dist/
+obj/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+
+# Test outputs and coverage
+coverage/
+*.gcda
+*.gcno
+test_results.xml
+ctest_output.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# CI/CD artifacts
+*.log
+*-report.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

@@ -1,0 +1,103 @@
+{
+  "reviewId": "unit-test-design-review-2026-09-29",
+  "date": "2026-09-29",
+  "scope": "Unit test design review for the Diagnostic DID Read MVP",
+  "artifactsReviewed": [
+    "unit-test-design.md",
+    "ut-design-testcase.csv"
+  ],
+  "references": {
+    "requirements": "requirements.md",
+    "design": "design.md",
+    "report": "review-report.md",
+    "findings": "review-findings.csv"
+  },
+  "overallDecision": {
+    "status": "accepted-with-follow-up",
+    "summary": "The unit-test design is accepted as aligned with the current MVP requirements baseline. Review findings raised during the review are closed. Remaining follow-up items are implementation-time and project-decision items, not blockers for the design baseline."
+  },
+  "decisions": [
+    {
+      "id": "DEC-001",
+      "topic": "Requirements-first traceability",
+      "decision": "Use requirements.md as the primary source of truth and design.md as supporting detail for test design review.",
+      "rationale": "This preserves requirement-based verification and stronger audit traceability.",
+      "status": "approved",
+      "evidence": [
+        "review-findings.csv#RVW-001",
+        "review-report.md"
+      ]
+    },
+    {
+      "id": "DEC-002",
+      "topic": "DID byte-order verification",
+      "decision": "Include an explicit reversed-byte DID scenario to prove high-byte-first DID decoding.",
+      "rationale": "FR-01 requires network byte order, and the review requires direct evidence that byte reversal does not accidentally match a supported DID.",
+      "status": "approved",
+      "evidence": [
+        "review-findings.csv#RVW-002",
+        "ut-design-testcase.csv#UT-024"
+      ]
+    },
+    {
+      "id": "DEC-003",
+      "topic": "Per-test requirement traceability",
+      "decision": "Keep requirement references in each CSV test-case row.",
+      "rationale": "This improves review efficiency, traceability, and future verification against DA-03.",
+      "status": "approved",
+      "evidence": [
+        "review-findings.csv#RVW-003",
+        "ut-design-testcase.csv"
+      ]
+    },
+    {
+      "id": "DEC-004",
+      "topic": "Boundary-case completeness",
+      "decision": "Retain explicit zero-capacity and wrong-SID insufficient-capacity scenarios in the CSV test matrix.",
+      "rationale": "These strengthen FR-08 and QR-01 coverage and confirm no-write behavior at important boundaries.",
+      "status": "approved",
+      "evidence": [
+        "review-findings.csv#RVW-004",
+        "ut-design-testcase.csv#UT-025",
+        "ut-design-testcase.csv#UT-026"
+      ]
+    },
+    {
+      "id": "DEC-005",
+      "topic": "Non-functional verification method",
+      "decision": "Verify QR-03 and QR-04 by implementation review and, where available, static analysis rather than by functional unit tests alone.",
+      "rationale": "No dynamic allocation, portable C99 usage, fixed-width types, and named constants are not fully proven by the current functional test design.",
+      "status": "approved",
+      "evidence": [
+        "review-findings.csv#RVW-005",
+        "unit-test-design.md"
+      ]
+    }
+  ],
+  "followUpItems": [
+    {
+      "id": "FUP-001",
+      "item": "Select the unit-test framework or self-contained harness.",
+      "status": "open",
+      "blocking": false
+    },
+    {
+      "id": "FUP-002",
+      "item": "Select fictional fixed payload bytes for both supported DIDs.",
+      "status": "open",
+      "blocking": false
+    },
+    {
+      "id": "FUP-003",
+      "item": "Verify QR-03 and QR-04 during source review or static analysis once implementation files exist.",
+      "status": "open",
+      "blocking": false
+    },
+    {
+      "id": "FUP-004",
+      "item": "Execute the designed tests and record objective results separately.",
+      "status": "open",
+      "blocking": false
+    }
+  ]
+}
