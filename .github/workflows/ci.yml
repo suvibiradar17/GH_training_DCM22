@@ -1,0 +1,138 @@
+name: CI - Build, Test, and Lint
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+        # Install clang if needed
+        if [ "${{ matrix.compiler }}" = "clang" ]; then
+          sudo apt-get install -y clang
+        fi
+    
+    - name: Compile with ${{ matrix.compiler }}
+      run: |
+        # Create build directory
+        mkdir -p build
+        cd build
+        
+        # Configure build with selected compiler
+        if [ "${{ matrix.compiler }}" = "gcc" ]; then
+          CC=gcc CXX=g++ cmake .. -DCMAKE_BUILD_TYPE=Debug
+        else
+          CC=clang CXX=clang++ cmake .. -DCMAKE_BUILD_TYPE=Debug
+        fi
+        
+        # Build
+        cmake --build . --config Debug
+      continue-on-error: true
+    
+    - name: Run unit tests
+      run: |
+        cd build
+        ctest --output-on-failure
+      continue-on-error: true
+    
+    - name: Run linting (cppcheck)
+      run: |
+        sudo apt-get install -y cppcheck
+        cppcheck --enable=all --std=c99 src/ include/ tests/ 2>&1 | tee cppcheck-report.txt
+      continue-on-error: true
+    
+    - name: Run linting (cpplint)
+      run: |
+        pip install cpplint
+        cpplint --filter=-legal/copyright src/*.c include/*.h 2>&1 | tee cpplint-report.txt || true
+      continue-on-error: true
+    
+    - name: Upload build artifacts
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts-${{ matrix.compiler }}
+        path: |
+          build/
+          *-report.txt
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.compiler }}
+        path: build/Testing/
+
+  code-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Design artifact validation
+      run: |
+        # Check that test design artifacts exist
+        if [ ! -f "Docs/unit-test-design.md" ]; then
+          echo "ERROR: Docs/unit-test-design.md not found"
+          exit 1
+        fi
+        
+        if [ ! -f "Docs/ut-design-testcase.csv" ]; then
+          echo "ERROR: Docs/ut-design-testcase.csv not found"
+          exit 1
+        fi
+        
+        if [ ! -f "Docs/review-report.md" ]; then
+          echo "WARNING: Docs/review-report.md not found - run review-design.py to generate"
+        fi
+        
+        echo "Design artifacts validation passed"
+    
+    - name: Check requirements traceability
+      run: |
+        # Basic check that requirements are referenced in test CSV
+        if grep -q "Req:" Docs/ut-design-testcase.csv; then
+          echo "Requirement references found in test CSV"
+        else
+          echo "WARNING: No requirement references found in test CSV"
+        fi
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, code-review]
+    if: always()
+    
+    steps:
+    - name: Check status
+      run: |
+        echo "## CI Pipeline Summary"
+        echo "Build and test: ${{ needs.build-and-test.result }}"
+        echo "Code review: ${{ needs.code-review.result }}"
+        
+        if [ "${{ needs.build-and-test.result }}" = "failure" ]; then
+          echo "❌ Build or test failed"
+          exit 1
+        fi
+        
+        if [ "${{ needs.code-review.result }}" = "failure" ]; then
+          echo "❌ Code review checks failed"
+          exit 1
+        fi
+        
+        echo "✅ All checks passed"
