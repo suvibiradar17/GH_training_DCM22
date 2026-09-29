@@ -113,9 +113,57 @@ jobs:
           echo "WARNING: No requirement references found in test CSV"
         fi
 
-  summary:
+  deploy:
     runs-on: ubuntu-latest
     needs: [build-and-test, code-review]
+    if: success()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key.pem
+        chmod 600 ~/.ssh/aws-key.pem
+        ssh-keyscan -H ${{ secrets.AWS_INSTANCE_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+    
+    - name: Deploy and update timestamp
+      run: |
+        # Generate current timestamp in IST format (UTC+5:30)
+        IST_TIMESTAMP=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')
+        
+        # SSH to AWS instance and update deployment status file
+        ssh -i ~/.ssh/aws-key.pem ${{ secrets.AWS_SSH_USER }}@${{ secrets.AWS_INSTANCE_HOST }} << EOF
+          # Create or update deployment status file with timestamp
+          DEPLOY_STATUS_FILE="/home/${{ secrets.AWS_SSH_USER }}/dcm-mvp-deployment-status.txt"
+          
+          echo "Deployment Status:" > \$DEPLOY_STATUS_FILE
+          echo "Last Deployment: \$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')" >> \$DEPLOY_STATUS_FILE
+          echo "Branch: ${{ github.ref }}" >> \$DEPLOY_STATUS_FILE
+          echo "Commit SHA: ${{ github.sha }}" >> \$DEPLOY_STATUS_FILE
+          echo "Commit Message: ${{ github.event.head_commit.message }}" >> \$DEPLOY_STATUS_FILE
+          echo "" >> \$DEPLOY_STATUS_FILE
+          echo "Pipeline Status: SUCCESS" >> \$DEPLOY_STATUS_FILE
+          
+          cat \$DEPLOY_STATUS_FILE
+        EOF
+    
+    - name: Verify deployment
+      run: |
+        echo "Deployment completed successfully"
+        ssh -i ~/.ssh/aws-key.pem ${{ secrets.AWS_SSH_USER }}@${{ secrets.AWS_INSTANCE_HOST }} \
+          "echo 'AWS Instance Verification:' && uptime && echo 'DCM MVP Deployment Status:' && cat /home/${{ secrets.AWS_SSH_USER }}/dcm-mvp-deployment-status.txt"
+    
+    - name: Cleanup SSH key
+      if: always()
+      run: |
+        rm -f ~/.ssh/aws-key.pem
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, code-review, deploy]
     if: always()
     
     steps:
@@ -124,6 +172,7 @@ jobs:
         echo "## CI Pipeline Summary"
         echo "Build and test: ${{ needs.build-and-test.result }}"
         echo "Code review: ${{ needs.code-review.result }}"
+        echo "Deployment: ${{ needs.deploy.result }}"
         
         if [ "${{ needs.build-and-test.result }}" = "failure" ]; then
           echo "❌ Build or test failed"
@@ -132,6 +181,11 @@ jobs:
         
         if [ "${{ needs.code-review.result }}" = "failure" ]; then
           echo "❌ Code review checks failed"
+          exit 1
+        fi
+        
+        if [ "${{ needs.deploy.result }}" = "failure" ]; then
+          echo "❌ Deployment failed"
           exit 1
         fi
         
