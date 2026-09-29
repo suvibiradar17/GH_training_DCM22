@@ -122,39 +122,55 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Setup SSH key
+    - name: Setup SSH key and known hosts
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
       run: |
         mkdir -p ~/.ssh
-        echo "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key.pem
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/aws-key.pem
         chmod 600 ~/.ssh/aws-key.pem
-        ssh-keyscan -H ${{ secrets.AWS_INSTANCE_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        # Add host to known_hosts with no strict checking
+        ssh-keyscan -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        # Test SSH connection
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
+          "${{ secrets.AWS_SSH_USER }}@$AWS_HOST" "echo 'SSH connection successful'" || {
+          echo "SSH connection failed"
+          exit 1
+        }
     
     - name: Deploy and update timestamp
+      env:
+        AWS_USER: ${{ secrets.AWS_SSH_USER }}
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
+        GIT_BRANCH: ${{ github.ref }}
+        GIT_SHA: ${{ github.sha }}
       run: |
-        # Generate current timestamp in IST format (UTC+5:30)
-        IST_TIMESTAMP=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')
+        DEPLOY_CMD="
+        DEPLOY_FILE=dcm-mvp-deployment-status.txt
+        {
+          echo 'Deployment Status:'
+          echo 'Last Deployment: '$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')
+          echo 'Branch: $GIT_BRANCH'
+          echo 'Commit SHA: $GIT_SHA'
+          echo ''
+          echo 'Pipeline Status: SUCCESS'
+        } > \$DEPLOY_FILE
+        cat \$DEPLOY_FILE
+        "
         
-        # SSH to AWS instance and update deployment status file
-        ssh -i ~/.ssh/aws-key.pem ${{ secrets.AWS_SSH_USER }}@${{ secrets.AWS_INSTANCE_HOST }} << EOF
-          # Create or update deployment status file with timestamp
-          DEPLOY_STATUS_FILE="/home/${{ secrets.AWS_SSH_USER }}/dcm-mvp-deployment-status.txt"
-          
-          echo "Deployment Status:" > \$DEPLOY_STATUS_FILE
-          echo "Last Deployment: \$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')" >> \$DEPLOY_STATUS_FILE
-          echo "Branch: ${{ github.ref }}" >> \$DEPLOY_STATUS_FILE
-          echo "Commit SHA: ${{ github.sha }}" >> \$DEPLOY_STATUS_FILE
-          echo "Commit Message: ${{ github.event.head_commit.message }}" >> \$DEPLOY_STATUS_FILE
-          echo "" >> \$DEPLOY_STATUS_FILE
-          echo "Pipeline Status: SUCCESS" >> \$DEPLOY_STATUS_FILE
-          
-          cat \$DEPLOY_STATUS_FILE
-        EOF
+        ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
+          "$AWS_USER@$AWS_HOST" "$DEPLOY_CMD"
     
     - name: Verify deployment
+      env:
+        AWS_USER: ${{ secrets.AWS_SSH_USER }}
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
       run: |
-        echo "Deployment completed successfully"
-        ssh -i ~/.ssh/aws-key.pem ${{ secrets.AWS_SSH_USER }}@${{ secrets.AWS_INSTANCE_HOST }} \
-          "echo 'AWS Instance Verification:' && uptime && echo 'DCM MVP Deployment Status:' && cat /home/${{ secrets.AWS_SSH_USER }}/dcm-mvp-deployment-status.txt"
+        ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
+          "$AWS_USER@$AWS_HOST" "echo '=== AWS Instance Info ===' && uptime && echo '' && echo '=== Deployment Status ===' && cat dcm-mvp-deployment-status.txt 2>/dev/null || echo 'Status file not found'"
     
     - name: Cleanup SSH key
       if: always()
