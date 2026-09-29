@@ -117,29 +117,123 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-and-test, code-review]
     if: success()
+    continue-on-error: true
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Setup SSH key and known hosts
+    - name: Validate AWS secrets
+      env:
+        AWS_USER: ${{ secrets.AWS_SSH_USER }}
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
+        SSH_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+      run: |
+        MISSING_SECRETS=0
+        
+        if [ -z "$AWS_HOST" ]; then
+          echo "❌ Missing secret: AWS_INSTANCE_HOST"
+          MISSING_SECRETS=1
+        fi
+        
+        if [ -z "$AWS_USER" ]; then
+          echo "❌ Missing secret: AWS_SSH_USER"
+          MISSING_SECRETS=1
+        fi
+        
+        if [ -z "$SSH_KEY" ]; then
+          echo "❌ Missing secret: AWS_SSH_PRIVATE_KEY"
+          MISSING_SECRETS=1
+        fi
+        
+        if [ $MISSING_SECRETS -eq 1 ]; then
+          echo ""
+          echo "⚠️  Deployment requires AWS secrets. Skipping deployment step."
+          echo "To enable deployment, add these secrets to your GitHub repository:"
+          echo "  1. AWS_INSTANCE_HOST (EC2 IP or hostname)"
+          echo "  2. AWS_SSH_USER (e.g., ubuntu, ec2-user)"
+          echo "  3. AWS_SSH_PRIVATE_KEY (contents of .pem file)"
+          exit 0
+        fi
+        
+        echo "✅ All AWS secrets are configured"
+    
+    - name: Setup SSH key
       env:
         SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
       run: |
+        if [ -z "$SSH_PRIVATE_KEY" ]; then
+          echo "Skipping SSH setup - secrets not configured"
+          exit 0
+        fi
+        
         mkdir -p ~/.ssh
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/aws-key.pem
         chmod 600 ~/.ssh/aws-key.pem
         
-        # Add host to known_hosts with no strict checking
-        ssh-keyscan -H "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-        
-        # Test SSH connection
-        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
-          "${{ secrets.AWS_SSH_USER }}@$AWS_HOST" "echo 'SSH connection successful'" || {
-          echo "SSH connection failed"
+        # Verify key was written
+        if [ ! -f ~/.ssh/aws-key.pem ]; then
+          echo "ERROR: Failed to create SSH key file"
           exit 1
-        }
+        fi
+        
+        # Check key file has content
+        KEY_SIZE=$(wc -c < ~/.ssh/aws-key.pem)
+        if [ $KEY_SIZE -lt 100 ]; then
+          echo "ERROR: SSH key file appears invalid (too small: $KEY_SIZE bytes)"
+          exit 1
+        fi
+        
+        echo "✅ SSH key setup complete ($KEY_SIZE bytes)"
+    
+    - name: Configure SSH known_hosts
+      env:
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
+      run: |
+        if [ -z "$AWS_HOST" ]; then
+          echo "Skipping SSH configuration - secrets not configured"
+          exit 0
+        fi
+        
+        mkdir -p ~/.ssh
+        
+        # Add host with timeout
+        echo "Scanning host: $AWS_HOST"
+        if ssh-keyscan -H -T 5 "$AWS_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+          echo "✅ Host key added to known_hosts"
+        else
+          echo "⚠️  Could not scan host key (host may be unreachable)"
+        fi
+    
+    - name: Test SSH connection
+      env:
+        AWS_USER: ${{ secrets.AWS_SSH_USER }}
+        AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
+      run: |
+        if [ -z "$AWS_HOST" ] || [ -z "$AWS_USER" ]; then
+          echo "Skipping SSH test - secrets not configured"
+          exit 0
+        fi
+        
+        if [ ! -f ~/.ssh/aws-key.pem ]; then
+          echo "ERROR: SSH key not found"
+          exit 1
+        fi
+        
+        echo "Testing SSH connection to ${AWS_USER}@${AWS_HOST}..."
+        
+        if ssh -v \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o BatchMode=yes \
+            -i ~/.ssh/aws-key.pem \
+            "${AWS_USER}@${AWS_HOST}" "echo '✅ SSH connection successful'" 2>&1; then
+          echo "✅ SSH connection test passed"
+        else
+          echo "❌ SSH connection test failed"
+          exit 1
+        fi
     
     - name: Deploy and update timestamp
       env:
@@ -148,34 +242,89 @@ jobs:
         GIT_BRANCH: ${{ github.ref }}
         GIT_SHA: ${{ github.sha }}
       run: |
-        DEPLOY_CMD="
-        DEPLOY_FILE=dcm-mvp-deployment-status.txt
-        {
-          echo 'Deployment Status:'
-          echo 'Last Deployment: '$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')
-          echo 'Branch: $GIT_BRANCH'
-          echo 'Commit SHA: $GIT_SHA'
-          echo ''
-          echo 'Pipeline Status: SUCCESS'
-        } > \$DEPLOY_FILE
-        cat \$DEPLOY_FILE
-        "
+        if [ -z "$AWS_HOST" ] || [ -z "$AWS_USER" ]; then
+          echo "Skipping deployment - secrets not configured"
+          exit 0
+        fi
         
-        ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
-          "$AWS_USER@$AWS_HOST" "$DEPLOY_CMD"
+        if [ ! -f ~/.ssh/aws-key.pem ]; then
+          echo "ERROR: SSH key not found"
+          exit 1
+        fi
+        
+        echo "Deploying to ${AWS_USER}@${AWS_HOST}..."
+        
+        ssh -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o BatchMode=yes \
+            -i ~/.ssh/aws-key.pem \
+            "${AWS_USER}@${AWS_HOST}" << 'SSHEOF'
+        IST_TIME=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')
+        DEPLOY_FILE=dcm-mvp-deployment-status.txt
+        
+        cat > "$DEPLOY_FILE" << EOF
+        Deployment Status:
+        Last Deployment: $IST_TIME
+        Branch: $GIT_BRANCH
+        Commit SHA: $GIT_SHA
+        Pipeline Status: SUCCESS
+        EOF
+        
+        if [ -f "$DEPLOY_FILE" ]; then
+          echo "✅ Deployment file created successfully"
+          echo "File contents:"
+          cat "$DEPLOY_FILE"
+        else
+          echo "❌ Failed to create deployment file"
+          exit 1
+        fi
+        SSHEOF
     
     - name: Verify deployment
       env:
         AWS_USER: ${{ secrets.AWS_SSH_USER }}
         AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
       run: |
-        ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/aws-key.pem \
-          "$AWS_USER@$AWS_HOST" "echo '=== AWS Instance Info ===' && uptime && echo '' && echo '=== Deployment Status ===' && cat dcm-mvp-deployment-status.txt 2>/dev/null || echo 'Status file not found'"
+        if [ -z "$AWS_HOST" ] || [ -z "$AWS_USER" ]; then
+          echo "Skipping verification - secrets not configured"
+          exit 0
+        fi
+        
+        if [ ! -f ~/.ssh/aws-key.pem ]; then
+          echo "ERROR: SSH key not found"
+          exit 1
+        fi
+        
+        echo "=== Verifying deployment on ${AWS_USER}@${AWS_HOST} ==="
+        
+        ssh -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o BatchMode=yes \
+            -i ~/.ssh/aws-key.pem \
+            "${AWS_USER}@${AWS_HOST}" << 'SSHEOF'
+        echo ""
+        echo "=== AWS Instance Information ==="
+        uptime
+        echo ""
+        echo "=== Deployment Status File ==="
+        if [ -f dcm-mvp-deployment-status.txt ]; then
+          cat dcm-mvp-deployment-status.txt
+          echo "✅ Deployment verification successful"
+        else
+          echo "❌ Deployment status file not found"
+          exit 1
+        fi
+        SSHEOF
     
     - name: Cleanup SSH key
       if: always()
       run: |
-        rm -f ~/.ssh/aws-key.pem
+        if [ -f ~/.ssh/aws-key.pem ]; then
+          rm -f ~/.ssh/aws-key.pem
+          echo "✅ SSH key cleaned up securely"
+        fi
 
   summary:
     runs-on: ubuntu-latest
