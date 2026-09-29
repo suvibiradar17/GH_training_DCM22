@@ -129,62 +129,145 @@ jobs:
         AWS_HOST: ${{ secrets.AWS_INSTANCE_HOST }}
         SSH_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
       run: |
-        MISSING_SECRETS=0
+        echo "=== AWS Secrets Validation ==="
+        ISSUES=0
         
         if [ -z "$AWS_HOST" ]; then
           echo "❌ Missing secret: AWS_INSTANCE_HOST"
-          MISSING_SECRETS=1
+          echo "   Add to: Settings → Secrets and variables → Actions"
+          ISSUES=1
+        else
+          echo "✅ AWS_INSTANCE_HOST is configured"
         fi
         
         if [ -z "$AWS_USER" ]; then
           echo "❌ Missing secret: AWS_SSH_USER"
-          MISSING_SECRETS=1
+          echo "   Add to: Settings → Secrets and variables → Actions"
+          ISSUES=1
+        else
+          echo "✅ AWS_SSH_USER is configured (${#AWS_USER} chars)"
         fi
         
         if [ -z "$SSH_KEY" ]; then
           echo "❌ Missing secret: AWS_SSH_PRIVATE_KEY"
-          MISSING_SECRETS=1
+          echo "   Add to: Settings → Secrets and variables → Actions"
+          ISSUES=1
+        else
+          SSH_KEY_SIZE=${#SSH_KEY}
+          echo "ℹ️  AWS_SSH_PRIVATE_KEY size: $SSH_KEY_SIZE bytes"
+          
+          if [ $SSH_KEY_SIZE -lt 500 ]; then
+            echo "❌ WARNING: SSH key is very small ($SSH_KEY_SIZE bytes)"
+            echo "   Typical RSA keys are 1500-3000 bytes"
+            echo "   This suggests the key content is incomplete"
+            ISSUES=1
+          elif echo "$SSH_KEY" | grep -q "BEGIN.*PRIVATE KEY"; then
+            echo "✅ SSH key contains valid BEGIN marker"
+          else
+            echo "❌ SSH key missing 'BEGIN PRIVATE KEY' marker"
+            ISSUES=1
+          fi
         fi
         
-        if [ $MISSING_SECRETS -eq 1 ]; then
+        if [ $ISSUES -eq 1 ]; then
           echo ""
-          echo "⚠️  Deployment requires AWS secrets. Skipping deployment step."
-          echo "To enable deployment, add these secrets to your GitHub repository:"
-          echo "  1. AWS_INSTANCE_HOST (EC2 IP or hostname)"
-          echo "  2. AWS_SSH_USER (e.g., ubuntu, ec2-user)"
-          echo "  3. AWS_SSH_PRIVATE_KEY (contents of .pem file)"
+          echo "⚠️  DEPLOYMENT WILL BE SKIPPED due to missing/invalid secrets"
+          echo ""
+          echo "To enable deployment:"
+          echo ""
+          echo "1. AWS_INSTANCE_HOST - Your EC2 instance IP or hostname"
+          echo "   Example: ec2-1-2-3-4.compute.amazonaws.com"
+          echo ""
+          echo "2. AWS_SSH_USER - SSH username"
+          echo "   Example: ubuntu (for Ubuntu AMI) or ec2-user (for Amazon Linux)"
+          echo ""
+          echo "3. AWS_SSH_PRIVATE_KEY - Complete contents of your .pem file"
+          echo "   ⚠️  IMPORTANT: Copy the ENTIRE file including:"
+          echo "   -----BEGIN RSA PRIVATE KEY-----"
+          echo "   [many lines of base64 encoded data]"
+          echo "   -----END RSA PRIVATE KEY-----"
+          echo ""
+          echo "   Do NOT include:"
+          echo "   - Extra spaces or blank lines before/after"
+          echo "   - Any other text or comments"
+          echo "   - Multiple keys"
           exit 0
         fi
         
-        echo "✅ All AWS secrets are configured"
+        echo ""
+        echo "✅ All AWS secrets appear valid - deployment will proceed"
     
     - name: Setup SSH key
       env:
         SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
       run: |
         if [ -z "$SSH_PRIVATE_KEY" ]; then
-          echo "Skipping SSH setup - secrets not configured"
-          exit 0
+          echo "❌ ERROR: SSH_PRIVATE_KEY secret is empty"
+          echo ""
+          echo "To fix this:"
+          echo "1. Copy the ENTIRE contents of your .pem file (including BEGIN and END lines)"
+          echo "2. Go to GitHub repo → Settings → Secrets and variables → Actions"
+          echo "3. Edit AWS_SSH_PRIVATE_KEY and paste the complete key"
+          echo "4. Make sure NO extra spaces or lines are included"
+          echo ""
+          echo "Example .pem file format:"
+          echo "-----BEGIN RSA PRIVATE KEY-----"
+          echo "MIIEpAIBAAKCAQEA..."
+          echo "...many lines of base64..."
+          echo "-----END RSA PRIVATE KEY-----"
+          exit 1
         fi
         
         mkdir -p ~/.ssh
-        echo "$SSH_PRIVATE_KEY" > ~/.ssh/aws-key.pem
+        
+        # Debug: show secret size
+        SECRET_SIZE=${#SSH_PRIVATE_KEY}
+        echo "ℹ️  Secret size: $SECRET_SIZE bytes"
+        
+        # Use printf instead of echo to handle newlines better
+        printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/aws-key.pem
         chmod 600 ~/.ssh/aws-key.pem
         
         # Verify key was written
         if [ ! -f ~/.ssh/aws-key.pem ]; then
-          echo "ERROR: Failed to create SSH key file"
+          echo "❌ ERROR: Failed to create SSH key file"
           exit 1
         fi
         
         # Check key file has content
         KEY_SIZE=$(wc -c < ~/.ssh/aws-key.pem)
-        if [ $KEY_SIZE -lt 100 ]; then
-          echo "ERROR: SSH key file appears invalid (too small: $KEY_SIZE bytes)"
+        echo "ℹ️  SSH key file size: $KEY_SIZE bytes"
+        
+        # Check for BEGIN/END markers
+        if ! grep -q "BEGIN.*PRIVATE KEY" ~/.ssh/aws-key.pem; then
+          echo "❌ ERROR: SSH key file missing 'BEGIN PRIVATE KEY' marker"
+          echo "This usually means the secret was not copied correctly."
+          echo ""
+          echo "Common mistakes:"
+          echo "  - Only copied part of the key"
+          echo "  - Added extra text before/after the key"
+          echo "  - Used the wrong file (not the .pem file)"
+          exit 1
+        fi
+        
+        if ! grep -q "END.*PRIVATE KEY" ~/.ssh/aws-key.pem; then
+          echo "❌ ERROR: SSH key file missing 'END PRIVATE KEY' marker"
+          exit 1
+        fi
+        
+        if [ $KEY_SIZE -lt 1000 ]; then
+          echo "❌ ERROR: SSH key file too small ($KEY_SIZE bytes)"
+          echo "Typical RSA private keys are 1500-3000 bytes"
+          echo ""
+          echo "Please verify:"
+          echo "  1. You copied the complete .pem file (all lines)"
+          echo "  2. The secret contains only the key (no extra text)"
+          echo "  3. No lines were accidentally deleted"
           exit 1
         fi
         
         echo "✅ SSH key setup complete ($KEY_SIZE bytes)"
+        echo "✅ Key contains valid BEGIN/END markers"
     
     - name: Configure SSH known_hosts
       env:
